@@ -26,6 +26,7 @@ import API_BASE_URL, { apiFetch } from "../lib/api";
 import FloatingAssistant from "../components/common/FloatingAssistant";
 import CourseCardMeta from "../components/common/CourseCardMeta";
 import DashboardHero from "../components/DashboardHero";
+import AILessonBanner from "../components/AILessonBanner";
 import UpcomingLiveSession from "../components/UpcomingLiveSession";
 import { Helmet } from "react-helmet-async";
 
@@ -793,6 +794,9 @@ console.log(allCourses);
             }
           </div>
         </div>
+
+        {/* AI Generated Lessons promo (Issue #183) */}
+        <AILessonBanner onGenerate={handleContinueLearning} />
         </div>
 
         {/* Right Sidebar */}
