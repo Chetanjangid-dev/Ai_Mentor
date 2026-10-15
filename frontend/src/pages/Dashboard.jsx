@@ -29,6 +29,7 @@ import DashboardHero from "../components/DashboardHero";
 import AILessonBanner from "../components/AILessonBanner";
 import UpcomingLiveSession from "../components/UpcomingLiveSession";
 import { Helmet } from "react-helmet-async";
+import toast from "react-hot-toast";
 
 // Add this here
 const getImageUrl = (image) => {
@@ -94,17 +95,8 @@ const Dashboard = () => {
 
         const allCourses = await coursesRes.json();
 
-console.log("ALL COURSES DATA:");
-console.log(allCourses);
 
-allCourses.forEach((course) => {
-  console.log({
-    id: course.id,
-    title: course.title,
-    image: course.image,
-  });
-});
-console.log(allCourses);
+
         const { statsCards } = await statsRes.json();
 
         setCoursesData({ allCourses, statsCards });
@@ -351,6 +343,48 @@ console.log(allCourses);
       return;
     }
     handleBrowseCourses();
+  };
+
+  // AI lesson generation lives inside a course's learning page (celebrity
+  // voiceover), so open the first enrolled course with that modal requested.
+  const handleGenerateAILesson = async () => {
+    let courseId = continueLearning[0]?.id ?? myCourses[0]?.id;
+
+    if (!courseId) {
+      // The lists above only cover the first page of /api/courses and stay
+      // empty if the stats request fails, so ask the API for the learner's
+      // enrolled (published) courses directly before concluding there are none.
+      try {
+        const response = await fetch("/api/courses/my-courses", {
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        });
+        if (!response.ok) {
+          throw new Error(`My courses API failed: ${response.status}`);
+        }
+        const enrolledCourses = await response.json();
+        courseId = Array.isArray(enrolledCourses) ? enrolledCourses[0]?.id : undefined;
+      } catch (error) {
+        console.error("Error fetching enrolled courses:", error);
+        toast.error("Couldn't load your courses. Please try again.");
+        return;
+      }
+    }
+
+    if (courseId) {
+      navigate(`/learning/${courseId}`, { state: { openAIVoiceover: true } });
+      return;
+    }
+
+    // Only redirect to Explore Courses when there are actually courses to show;
+    // otherwise the user lands on an empty page with no actionable next step.
+    if (coursesData.allCourses.length > 0) {
+      toast("Enroll in a course to try AI lessons.");
+      handleBrowseCourses();
+    } else {
+      toast.error(
+        "No courses are available right now. Check back soon!"
+      );
+    }
   };
 
   const enrollAndPreview = async (course) => {
@@ -796,7 +830,7 @@ console.log(allCourses);
         </div>
 
         {/* AI Generated Lessons promo (Issue #183) */}
-        <AILessonBanner onGenerate={handleContinueLearning} />
+        <AILessonBanner onGenerate={handleGenerateAILesson} />
         </div>
 
         {/* Right Sidebar */}

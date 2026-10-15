@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { getAIVideo } from "../service/aiService";
 import VideoPlayer from "../components/video/VideoPlayer";
@@ -30,6 +30,7 @@ import {
 export default function Learning() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const { id: courseId } = useParams();
   const { user, updateUser } = useAuth();
   const [learningData, setLearningData] = useState(null);
@@ -179,9 +180,24 @@ export default function Learning() {
   }, [courseId]);
 
   // Reset restore flag on course change
+  const openedAIVoiceoverRef = useRef(false);
   useEffect(() => {
     hasRestoredProgressRef.current = false;
+    openedAIVoiceoverRef.current = false;
   }, [courseId]);
+
+  // Dashboard "Generate AI Lesson" banner: open the existing celebrity modal
+  // once, after the learning data has loaded.
+  useEffect(() => {
+    if (!learningData || openedAIVoiceoverRef.current) return;
+    if (!location.state?.openAIVoiceover) return;
+    openedAIVoiceoverRef.current = true;
+    setIsCelebrityModalOpen(true);
+    // Drop the flag from history state so a refresh doesn't reopen the modal.
+    const restState = { ...location.state };
+    delete restState.openAIVoiceover;
+    navigate(location.pathname, { replace: true, state: restState });
+  }, [learningData, location, navigate]);
 
   // Captions useEffect
   useEffect(() => {
