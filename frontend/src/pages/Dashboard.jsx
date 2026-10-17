@@ -52,6 +52,7 @@ const Dashboard = () => {
   });
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
+  const [coursesLoadFailed, setCoursesLoadFailed] = useState(false);
   const { user, fetchUserProfile } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -89,19 +90,25 @@ const Dashboard = () => {
         if (!coursesRes || !coursesRes.ok) {
           throw new Error(`Courses API failed: ${coursesRes?.status}`);
         }
-        if (!statsRes || !statsRes.ok) {
-          throw new Error(`Stats API failed: ${statsRes?.status}`);
-        }
 
         const allCourses = await coursesRes.json();
 
-
-
-        const { statsCards } = await statsRes.json();
+        // The course list must not depend on the stats request: if stats fail,
+        // Popular/My Courses and the AI lesson banner still need the courses.
+        let statsCards = [];
+        try {
+          if (!statsRes || !statsRes.ok) {
+            throw new Error(`Stats API failed: ${statsRes?.status}`);
+          }
+          ({ statsCards } = await statsRes.json());
+        } catch (statsError) {
+          console.error("Error fetching dashboard stats:", statsError);
+        }
 
         setCoursesData({ allCourses, statsCards });
       } catch (error) {
         console.error("Error fetching dashboard data:", error);
+        setCoursesLoadFailed(true);
       } finally {
         setLoading(false);
       }
@@ -380,6 +387,11 @@ const Dashboard = () => {
     if (coursesData.allCourses.length > 0) {
       toast("Enroll in a course to try AI lessons.");
       handleBrowseCourses();
+    } else if (loading) {
+      toast("Courses are still loading. Please try again in a moment.");
+    } else if (coursesLoadFailed) {
+      // The course request failed, so we cannot say none exist.
+      toast.error("Couldn't load courses. Please try again.");
     } else {
       toast.error(
         "No courses are available right now. Check back soon!"

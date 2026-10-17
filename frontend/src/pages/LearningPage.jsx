@@ -445,6 +445,13 @@ export default function Learning() {
 }
 } catch (error) {
   console.error("AI video error:", error);
+  // Network failures surface as a TypeError with a browser-specific message,
+  // so show a friendly fallback; server errors carry their own message.
+  const fallbackMessage = "Couldn't generate the AI lesson. Please try again.";
+  toast.error(
+    error instanceof TypeError ? fallbackMessage : error?.message || fallbackMessage,
+    { id: "ai-video-error" }
+  );
   setGeneratedTextContent("");
   setAiVideoUrl(null);
   setIsPlaying(false);

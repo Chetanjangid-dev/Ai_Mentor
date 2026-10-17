@@ -1,186 +1,271 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import AILessonBanner from "../components/AILessonBanner";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
+
+// These tests render the REAL Dashboard and LearningPage with the real router.
+// Only the outside world is replaced: auth, network (fetch), toasts, i18n and
+// a few heavy presentational children that are irrelevant to this flow.
+
+const toastMock = vi.hoisted(() => {
+  const fn = vi.fn();
+  fn.error = vi.fn();
+  fn.success = vi.fn();
+  fn.loading = vi.fn();
+  fn.dismiss = vi.fn();
+  return fn;
+});
+vi.mock("react-hot-toast", () => ({ default: toastMock, toast: toastMock }));
+
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key) => key, i18n: { language: "en" } }),
+}));
+
+vi.mock("react-helmet-async", () => ({ Helmet: () => null }));
+
+const authState = vi.hoisted(() => ({
+  user: { id: 1, name: "Test", purchasedCourses: [{ courseId: 7, progress: {} }] },
+}));
+vi.mock("../context/AuthContext", () => ({
+  useAuth: () => ({
+    user: authState.user,
+    fetchUserProfile: vi.fn(),
+    updateUser: vi.fn(),
+  }),
+}));
+
+vi.mock("../components/Preferences", () => ({ default: () => null }));
+vi.mock("../components/common/FloatingAssistant", () => ({ default: () => null }));
+vi.mock("../components/DashboardHero", () => ({ default: () => null }));
+vi.mock("../components/UpcomingLiveSession", () => ({ default: () => null }));
+// LearningPage only starts generation once its <video> element exists, so the
+// stand-in must render a real <video> and attach the ref it is given.
+vi.mock("../components/video/VideoPlayer", () => ({
+  default: ({ videoRef }) => <video ref={videoRef} data-testid="video" />,
+}));
+vi.mock("../components/video/AITranscript", () => ({ default: () => null }));
+
+import Dashboard from "../pages/Dashboard";
+import LearningPage from "../pages/LearningPage";
+
+const LESSON = { id: 101, title: "Intro", duration: "5:00", type: "video" };
+const LEARNING_DATA = {
+  modules: [{ id: 1, title: "Module 1", lessons: [LESSON] }],
+  course: { id: 7, title: "React Basics", subtitle: "Web", progress: 0 },
+  currentLesson: { ...LESSON, module: "Module 1" },
+};
+
+const json = (body, status = 200) =>
+  Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
+
+// Records the location so tests can assert on the real navigation result.
+let currentLocation;
+const LocationSpy = () => {
+  currentLocation = useLocation();
+  return null;
+};
+
+let generateResponse;
+let coursesResponse;
+let statsResponse;
+let myCoursesResponse;
+let fetchMock;
+
+const renderApp = () =>
+  render(
+    <MemoryRouter initialEntries={["/"]}>
+      <LocationSpy />
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/learning/:id" element={<LearningPage />} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+const clickBanner = async () => {
+  const button = await screen.findByRole("button", { name: /generate ai lesson/i });
+  fireEvent.click(button);
+};
+
+const generateCalls = () =>
+  fetchMock.mock.calls.filter(([url]) => String(url).includes("/api/ai/generate-video"));
+
+beforeEach(() => {
+  localStorage.setItem("token", "test-token");
+  toastMock.error.mockClear();
+  authState.user = {
+    id: 1,
+    name: "Test",
+    purchasedCourses: [{ courseId: 7, progress: {} }],
+  };
+  generateResponse = () => json({ message: "AI service unavailable" }, 500);
+  coursesResponse = () =>
+    json([{ id: 7, title: "React Basics", lessonsCount: 10, lessons: "10 lessons" }]);
+  // Real backend shape of GET /api/courses/stats/cards (no `statsCards` key).
+  statsResponse = () =>
+    json({ totalCourses: 1, completedCourses: 0, hoursLearned: 0, certificates: 0 });
+  myCoursesResponse = () => json([{ id: 7 }]);
+
+  fetchMock = vi.fn((url) => {
+    const u = String(url);
+    if (u.endsWith("/api/courses")) return coursesResponse();
+    if (u.includes("/api/courses/stats/cards")) return statsResponse();
+    if (u.includes("/api/courses/my-courses")) return myCoursesResponse();
+    if (u.includes("/api/certificate/list")) return json({ stats: {} });
+    if (u.includes("/api/courses/7/learning")) return json(structuredClone(LEARNING_DATA));
+    if (u.includes("/api/ai/generate-video")) return generateResponse();
+    return json({});
+  });
+  vi.stubGlobal("fetch", fetchMock);
+});
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
+  localStorage.clear();
 });
 
-// ─── 1. Presentational AILessonBanner tests (unchanged) ────────────────────
-describe("AILessonBanner", () => {
-  it("renders the title, New badge and subtitle", () => {
-    render(<AILessonBanner onGenerate={() => {}} />);
+describe("Dashboard banner when courses are missing (the 'No courses available' bug)", () => {
+  it("still shows courses when the stats request fails, and tells the user to enroll", async () => {
+    authState.user = { id: 1, name: "Test", purchasedCourses: [] };
+    myCoursesResponse = () => json([]);
+    statsResponse = () => json({ message: "Failed to load stats" }, 500);
 
-    expect(screen.getByText("Try AI Generated Lessons")).toBeDefined();
-    expect(screen.getByText("New")).toBeDefined();
-    expect(
-      screen.getByText(/create personalized video lessons with your favorite celebrity/i)
-    ).toBeDefined();
+    renderApp();
+    // Courses come from /api/courses and must not be blanked by the stats failure.
+    expect((await screen.findAllByText("React Basics")).length).toBeGreaterThan(0);
+
+    await clickBanner();
+
+    await waitFor(() => expect(toastMock).toHaveBeenCalledWith("Enroll in a course to try AI lessons."));
+    await waitFor(() => expect(currentLocation.pathname).toBe("/courses"));
+    expect(toastMock.error).not.toHaveBeenCalled();
   });
 
-  it("calls onGenerate once when the Generate AI Lesson button is clicked", () => {
-    const handleGenerate = vi.fn();
-    render(<AILessonBanner onGenerate={handleGenerate} />);
+  it("says it could not LOAD courses (not 'none available') when /api/courses fails", async () => {
+    authState.user = { id: 1, name: "Test", purchasedCourses: [] };
+    myCoursesResponse = () => json([]);
+    coursesResponse = () => json({ message: "Failed to load courses" }, 500);
 
-    fireEvent.click(screen.getByRole("button", { name: /generate ai lesson/i }));
+    renderApp();
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/courses"))).toBe(true)
+    );
+    // Let the failed load settle before clicking.
+    await new Promise((r) => setTimeout(r, 50));
+    await clickBanner();
 
-    expect(handleGenerate).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith("Couldn't load courses. Please try again.")
+    );
+    expect(toastMock.error).not.toHaveBeenCalledWith(
+      "No courses are available right now. Check back soon!"
+    );
   });
 
-  it("does not trigger onGenerate on render", () => {
-    const handleGenerate = vi.fn();
-    render(<AILessonBanner onGenerate={handleGenerate} />);
+  it("says no courses are available only when the API genuinely returns none", async () => {
+    authState.user = { id: 1, name: "Test", purchasedCourses: [] };
+    myCoursesResponse = () => json([]);
+    coursesResponse = () => json([]);
 
-    expect(handleGenerate).not.toHaveBeenCalled();
+    renderApp();
+    await new Promise((r) => setTimeout(r, 50));
+    await clickBanner();
+
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith(
+        "No courses are available right now. Check back soon!"
+      )
+    );
   });
 });
 
-// ─── 2. handleGenerateAILesson logic tests ─────────────────────────────────
-//
-// The handler lives inside Dashboard which is heavy to render in unit tests
-// (requires AuthContext, i18n, react-router, many API mocks, etc.).
-// Instead we extract its core decision logic into a pure, testable function
-// and verify the four code paths:
-//   A. enrolled course found locally  → navigate to learning page
-//   B. enrolled course found via API   → navigate to learning page
-//   C. API error                       → error toast, no redirect
-//   D. no enrolled courses, browse ok  → info toast + redirect
-//   E. no enrolled courses, nothing    → error toast, no redirect
+describe("Dashboard banner -> AI lesson picker (real components)", () => {
+  it("clicking the banner navigates to the course and opens the celebrity picker", async () => {
+    renderApp();
+    await clickBanner();
 
-/**
- * Mirrors the decision logic of handleGenerateAILesson from Dashboard.jsx.
- * Returns { action, courseId?, toastType?, toastMsg? }.
- */
-async function resolveAILessonAction({
-  continueLearning,
-  myCourses,
-  allCourses,
-  fetchMyCourses, // async () => { id }[] | throws
-}) {
-  let courseId = continueLearning[0]?.id ?? myCourses[0]?.id;
+    // Real router navigation to the enrolled course's learning page.
+    await waitFor(() => expect(currentLocation.pathname).toBe("/learning/7"));
 
-  if (!courseId) {
-    try {
-      const enrolled = await fetchMyCourses();
-      courseId = Array.isArray(enrolled) ? enrolled[0]?.id : undefined;
-    } catch {
-      return { action: "error", toastType: "error", toastMsg: "Couldn't load your courses. Please try again." };
-    }
-  }
+    // The picker (existing modal) opens without any further user action.
+    expect(await screen.findByText("Salman Khan")).toBeDefined();
+    expect(screen.getByText("Modi ji")).toBeDefined();
+    expect(screen.getByText("SRK")).toBeDefined();
 
-  if (courseId) {
-    return { action: "navigate", courseId };
-  }
-
-  if (allCourses.length > 0) {
-    return { action: "browse", toastType: "info", toastMsg: "Enroll in a course to try AI lessons." };
-  }
-
-  return { action: "none", toastType: "error", toastMsg: "No courses are available right now. Check back soon!" };
-}
-
-describe("handleGenerateAILesson logic", () => {
-  it("A: navigates to learning page when user has an in-progress course", async () => {
-    const result = await resolveAILessonAction({
-      continueLearning: [{ id: "course-42" }],
-      myCourses: [{ id: "course-42" }],
-      allCourses: [{ id: "course-42" }],
-      fetchMyCourses: async () => [],
-    });
-
-    expect(result.action).toBe("navigate");
-    expect(result.courseId).toBe("course-42");
+    // Opening the picker must not start generation by itself.
+    expect(generateCalls()).toHaveLength(0);
   });
 
-  it("A: prefers continueLearning over myCourses", async () => {
-    const result = await resolveAILessonAction({
-      continueLearning: [{ id: "in-progress-1" }],
-      myCourses: [{ id: "enrolled-1" }],
-      allCourses: [{ id: "in-progress-1" }, { id: "enrolled-1" }],
-      fetchMyCourses: async () => [],
-    });
+  it("clears the navigation flag so the picker does not reopen on refresh/re-entry", async () => {
+    renderApp();
+    await clickBanner();
+    await screen.findByText("Salman Khan");
 
-    expect(result.courseId).toBe("in-progress-1");
+    await waitFor(() => expect(currentLocation.state?.openAIVoiceover).toBeUndefined());
   });
 
-  it("A: falls back to myCourses when continueLearning is empty", async () => {
-    const result = await resolveAILessonAction({
-      continueLearning: [],
-      myCourses: [{ id: "enrolled-1" }],
-      allCourses: [{ id: "enrolled-1" }],
-      fetchMyCourses: async () => [],
-    });
+  it("does not open the picker on normal navigation to the learning page", async () => {
+    render(
+      <MemoryRouter initialEntries={["/learning/7"]}>
+        <Routes>
+          <Route path="/learning/:id" element={<LearningPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
 
-    expect(result.action).toBe("navigate");
-    expect(result.courseId).toBe("enrolled-1");
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/courses/7/learning"))).toBe(true)
+    );
+    expect(screen.queryByText("Salman Khan")).toBeNull();
   });
 
-  it("B: fetches my-courses API when local lists are empty", async () => {
-    const fetchMyCourses = vi.fn().mockResolvedValue([{ id: "api-course-7" }]);
+  it("choosing a celebrity sends exactly one generate-video request with the right payload", async () => {
+    generateResponse = () =>
+      json({ cached: true, videoUrl: "https://res.cloudinary.com/demo/video.mp4", jobId: "j1" });
 
-    const result = await resolveAILessonAction({
-      continueLearning: [],
-      myCourses: [],
-      allCourses: [{ id: "api-course-7" }],
-      fetchMyCourses,
+    renderApp();
+    await clickBanner();
+    fireEvent.click(await screen.findByText("Salman Khan"));
+
+    await waitFor(() => expect(generateCalls()).toHaveLength(1));
+    const [url, options] = generateCalls()[0];
+    expect(url).toBe("/api/ai/generate-video");
+    expect(options.method).toBe("POST");
+    expect(options.headers.Authorization).toBe("Bearer test-token");
+    expect(JSON.parse(options.body)).toEqual({
+      courseId: 7,
+      lessonId: 101,
+      celebrity: "salman",
     });
-
-    expect(fetchMyCourses).toHaveBeenCalledOnce();
-    expect(result.action).toBe("navigate");
-    expect(result.courseId).toBe("api-course-7");
+    expect(toastMock.error).not.toHaveBeenCalled();
   });
 
-  it("C: shows error toast when my-courses API fails", async () => {
-    const fetchMyCourses = vi.fn().mockRejectedValue(new Error("Network error"));
+  it("shows the server's message when generate-video fails", async () => {
+    generateResponse = () => json({ message: "Course not purchased" }, 403);
 
-    const result = await resolveAILessonAction({
-      continueLearning: [],
-      myCourses: [],
-      allCourses: [{ id: "some-course" }],
-      fetchMyCourses,
-    });
+    renderApp();
+    await clickBanner();
+    fireEvent.click(await screen.findByText("Salman Khan"));
 
-    expect(result.action).toBe("error");
-    expect(result.toastType).toBe("error");
-    expect(result.toastMsg).toMatch(/couldn't load/i);
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith("Course not purchased", {
+        id: "ai-video-error",
+      })
+    );
   });
 
-  it("D: redirects to browse courses when enrolled is empty but courses exist", async () => {
-    const result = await resolveAILessonAction({
-      continueLearning: [],
-      myCourses: [],
-      allCourses: [{ id: "available-1" }, { id: "available-2" }],
-      fetchMyCourses: async () => [],
-    });
+  it("shows a friendly fallback when the request cannot reach the server", async () => {
+    generateResponse = () => Promise.reject(new TypeError("Failed to fetch"));
 
-    expect(result.action).toBe("browse");
-    expect(result.toastType).toBe("info");
-    expect(result.toastMsg).toMatch(/enroll in a course/i);
-  });
+    renderApp();
+    await clickBanner();
+    fireEvent.click(await screen.findByText("Salman Khan"));
 
-  it("E: shows error when no courses exist at all", async () => {
-    const result = await resolveAILessonAction({
-      continueLearning: [],
-      myCourses: [],
-      allCourses: [],
-      fetchMyCourses: async () => [],
-    });
-
-    expect(result.action).toBe("none");
-    expect(result.toastType).toBe("error");
-    expect(result.toastMsg).toMatch(/no courses are available/i);
-  });
-
-  it("B: does not call fetchMyCourses when a local course is available", async () => {
-    const fetchMyCourses = vi.fn();
-
-    await resolveAILessonAction({
-      continueLearning: [{ id: "local-course" }],
-      myCourses: [],
-      allCourses: [],
-      fetchMyCourses,
-    });
-
-    expect(fetchMyCourses).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith(
+        "Couldn't generate the AI lesson. Please try again.",
+        { id: "ai-video-error" }
+      )
+    );
   });
 });
