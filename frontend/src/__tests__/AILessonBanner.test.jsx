@@ -76,6 +76,7 @@ const renderApp = () =>
       <LocationSpy />
       <Routes>
         <Route path="/" element={<Dashboard />} />
+        <Route path="/courses" element={<div>Courses page</div>} />
         <Route path="/learning/:id" element={<LearningPage />} />
       </Routes>
     </MemoryRouter>
