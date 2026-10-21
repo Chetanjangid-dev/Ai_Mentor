@@ -14,6 +14,7 @@ process.env.RAZORPAY_KEY_SECRET = "razorpay-test-secret";
 const { default: express } = await import("express");
 const { default: User } = await import("../models/User.js");
 const { default: Payment } = await import("../models/Payment.js");
+const { default: Course } = await import("../models/Course.js");
 const { default: Notification } = await import("../models/Notification.js");
 const { sequelize } = await import("../config/db.js");
 const { paymentGatewayServices } = await import("../services/paymentGatewayServices.js");
@@ -24,6 +25,7 @@ const originals = {
   userFindByPk: User.findByPk,
   paymentFindOne: Payment.findOne,
   paymentFindByPk: Payment.findByPk,
+  courseFindByPk: Course.findByPk,
   paymentCreate: Payment.create,
   createStripeCheckoutSession: paymentGatewayServices.createStripeCheckoutSession,
   createRazorpayOrder: paymentGatewayServices.createRazorpayOrder,
@@ -46,6 +48,13 @@ before(async () => {
 
 beforeEach(() => {
   User.findByPk = async (id) => ({ id, isBlocked: false, passwordChangedAt: null });
+  Course.findByPk = async (id) => {
+    const numId = Number(id);
+    if (numId === 7) return { id: 7, title: "Secure Course", priceValue: 499, status: "published" };
+    if (numId === 9)
+      return { id: 9, title: "Razorpay Course", priceValue: 250, status: "published" };
+    return { id: numId, title: "Course", priceValue: 100, status: "published" };
+  };
   Payment.findOne = async () => null;
   Payment.findByPk = async () => null;
   Payment.create = async () => {
@@ -73,6 +82,7 @@ after(async () => {
   User.findByPk = originals.userFindByPk;
   Payment.findOne = originals.paymentFindOne;
   Payment.findByPk = originals.paymentFindByPk;
+  Course.findByPk = originals.courseFindByPk;
   Payment.create = originals.paymentCreate;
   paymentGatewayServices.createStripeCheckoutSession = originals.createStripeCheckoutSession;
   paymentGatewayServices.createRazorpayOrder = originals.createRazorpayOrder;
@@ -128,7 +138,7 @@ test("payment status returns only the expected fields to the owner", async () =>
 test("Stripe checkout rejects invalid course data and missing idempotency keys", async () => {
   let res = await request("/api/payment/create-checkout-session", {
     method: "POST",
-    body: { course: { id: 1, title: "Course", priceValue: 0 }, idempotencyKey: "key" },
+    body: { course: { title: "Course" }, idempotencyKey: "key" },
   });
   assert.equal(res.status, 400);
   assert.deepEqual(await res.json(), { error: "Invalid course data" });
@@ -165,7 +175,7 @@ test("Stripe checkout returns a non-expired cached idempotent response without c
 test("Razorpay order rejects invalid course data and missing idempotency keys", async () => {
   let res = await request("/api/razorpay/create-order", {
     method: "POST",
-    body: { course: { id: 1, priceValue: 0 }, idempotencyKey: "key" },
+    body: { course: { title: "Course" }, idempotencyKey: "key" },
   });
   assert.equal(res.status, 400);
   assert.deepEqual(await res.json(), { error: "Invalid course data" });
@@ -723,4 +733,82 @@ test("Razorpay verify duplicate: verifying twice updates, enrolls and notifies o
   assert.equal(state.user.purchasedCourses.length, 1);
   assert.equal(state.user.saves, 1);
   assert.equal(state.notifications, 1);
+});
+
+test("Stripe checkout rejects when course does not exist in database", async () => {
+  Course.findByPk = async () => null;
+  const res = await request("/api/payment/create-checkout-session", {
+    method: "POST",
+    body: { course: { id: 999 }, idempotencyKey: "missing-course" },
+  });
+  assert.equal(res.status, 404);
+  assert.deepEqual(await res.json(), { error: "Course not found" });
+});
+
+test("Stripe checkout ignores client price tampering and uses authoritative DB price", async () => {
+  let createdData;
+  let stripeOptions;
+  Payment.create = async (data) => {
+    createdData = data;
+    return {
+      id: "payment-tamper-check",
+      async update() {},
+    };
+  };
+  paymentGatewayServices.createStripeCheckoutSession = async (options) => {
+    stripeOptions = options;
+    return { id: "session-tamper", url: "https://checkout.test/session-tamper" };
+  };
+  // DB price for course 7 is 499 (₹499 -> 49900 paise). Client sends priceValue: 1 (tampered).
+  const res = await request("/api/payment/create-checkout-session", {
+    userId: "attacker-1",
+    method: "POST",
+    body: {
+      course: { id: 7, title: "Hacked Course Title", priceValue: 1 },
+      idempotencyKey: "stripe-tamper-test",
+    },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(createdData.amount, 49900); // Charged ₹499, NOT ₹1
+  assert.equal(createdData.courseTitle, "Secure Course"); // Uses DB course title
+  assert.equal(stripeOptions.line_items[0].price_data.unit_amount, 49900);
+});
+
+test("Razorpay order rejects when course does not exist in database", async () => {
+  Course.findByPk = async () => null;
+  const res = await request("/api/razorpay/create-order", {
+    method: "POST",
+    body: { course: { id: 999 }, idempotencyKey: "missing-rzp-course" },
+  });
+  assert.equal(res.status, 404);
+  assert.deepEqual(await res.json(), { error: "Course not found" });
+});
+
+test("Razorpay order ignores client price tampering and uses authoritative DB price", async () => {
+  let createdData;
+  let gatewayOptions;
+  Payment.create = async (data) => {
+    createdData = data;
+    return {
+      id: "payment-rzp-tamper",
+      async update() {},
+    };
+  };
+  paymentGatewayServices.createRazorpayOrder = async (options) => {
+    gatewayOptions = options;
+    return { id: "order-rzp-tamper", amount: options.amount, currency: options.currency };
+  };
+  // DB price for course 9 is 250 (₹250 -> 25000 paise). Client sends priceValue: 1 (tampered).
+  const res = await request("/api/razorpay/create-order", {
+    userId: "attacker-2",
+    method: "POST",
+    body: {
+      course: { id: 9, title: "Tampered Title", priceValue: 1 },
+      idempotencyKey: "rzp-tamper-test",
+    },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(createdData.amount, 25000); // Charged ₹250, NOT ₹1
+  assert.equal(gatewayOptions.amount, 25000);
+  assert.equal(createdData.courseTitle, "Razorpay Course");
 });
