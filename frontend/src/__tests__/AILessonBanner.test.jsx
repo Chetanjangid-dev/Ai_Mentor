@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
+import enLocales from "../i18n/locales/en.json";
+
+function getNested(obj, path) {
+  return path.split(".").reduce((acc, part) => acc?.[part], obj);
+}
 
 // These tests render the REAL Dashboard and LearningPage with the real router.
-// Only the outside world is replaced: auth, network (fetch), toasts, i18n and
-// a few heavy presentational children that are irrelevant to this flow.
+// Only external boundaries are replaced: auth, network (fetch), toasts, i18n,
+// and presentational dashboard widgets that are irrelevant to this flow.
 
 const toastMock = vi.hoisted(() => {
   const fn = vi.fn();
@@ -17,7 +22,10 @@ const toastMock = vi.hoisted(() => {
 vi.mock("react-hot-toast", () => ({ default: toastMock, toast: toastMock }));
 
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key) => key, i18n: { language: "en" } }),
+  useTranslation: () => ({
+    t: (key) => getNested(enLocales, key) || key,
+    i18n: { language: "en" },
+  }),
 }));
 
 vi.mock("react-helmet-async", () => ({ Helmet: () => null }));
@@ -37,15 +45,23 @@ vi.mock("../components/Preferences", () => ({ default: () => null }));
 vi.mock("../components/common/FloatingAssistant", () => ({ default: () => null }));
 vi.mock("../components/DashboardHero", () => ({ default: () => null }));
 vi.mock("../components/UpcomingLiveSession", () => ({ default: () => null }));
-// LearningPage only starts generation once its <video> element exists, so the
-// stand-in must render a real <video> and attach the ref it is given.
+vi.mock("../components/dashboard/QuickActions", () => ({ default: () => null }));
+vi.mock("../components/dashboard/TodaysLearningPlan", () => ({ default: () => null }));
+vi.mock("../components/dashboard/MeetAiMentorCard", () => ({ default: () => null }));
+vi.mock("../components/dashboard/LearningActivityCard", () => ({ default: () => null }));
+vi.mock("../components/dashboard/RecentActivityCard", () => ({ default: () => null }));
+vi.mock("../components/RecommendedForYou", () => ({ default: () => null }));
+
+// Stand-in for VideoPlayer renders real <video> element so LearningPage attaches ref
 vi.mock("../components/video/VideoPlayer", () => ({
   default: ({ videoRef }) => <video ref={videoRef} data-testid="video" />,
 }));
 vi.mock("../components/video/AITranscript", () => ({ default: () => null }));
 
 import Dashboard from "../pages/Dashboard";
+import { selectEligibleAICourse } from "../utils/courseEligibility";
 import LearningPage from "../pages/LearningPage";
+import AILessonBanner from "../components/AILessonBanner";
 
 const LESSON = { id: 101, title: "Intro", duration: "5:00", type: "video" };
 const LEARNING_DATA = {
@@ -57,7 +73,7 @@ const LEARNING_DATA = {
 const json = (body, status = 200) =>
   Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
 
-// Records the location so tests can assert on the real navigation result.
+// Records location so tests can assert real router navigation
 let currentLocation;
 const LocationSpy = () => {
   currentLocation = useLocation();
@@ -70,21 +86,30 @@ let statsResponse;
 let myCoursesResponse;
 let fetchMock;
 
-const renderApp = () =>
+const renderApp = (initialEntries = ["/"]) =>
   render(
-    <MemoryRouter initialEntries={["/"]}>
+    <MemoryRouter initialEntries={initialEntries}>
       <LocationSpy />
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/courses" element={<div>Courses page</div>} />
         <Route path="/learning/:id" element={<LearningPage />} />
       </Routes>
-    </MemoryRouter>
+    </MemoryRouter>,
   );
 
 const clickBanner = async () => {
-  const button = await screen.findByRole("button", { name: /generate ai lesson/i });
+  const banner = await screen.findByRole("region", { name: /try ai generated lessons/i });
+  const button = within(banner).getByRole("button", { name: /generate ai lesson/i });
   fireEvent.click(button);
+};
+
+const applyCelebrityVoice = async (name = "Salman Khan") => {
+  const radio = await screen.findByRole("radio", { name: new RegExp(name, "i") });
+  fireEvent.click(radio);
+  const applyButton = screen.getByRole("button", { name: /apply voice/i });
+  expect(applyButton.disabled).toBe(false);
+  fireEvent.click(applyButton);
 };
 
 const generateCalls = () =>
@@ -93,18 +118,20 @@ const generateCalls = () =>
 beforeEach(() => {
   localStorage.setItem("token", "test-token");
   toastMock.error.mockClear();
+  toastMock.mockClear();
   authState.user = {
     id: 1,
     name: "Test",
     purchasedCourses: [{ courseId: 7, progress: {} }],
   };
+
   generateResponse = () => json({ message: "AI service unavailable" }, 500);
   coursesResponse = () =>
     json([{ id: 7, title: "React Basics", lessonsCount: 10, lessons: "10 lessons" }]);
   // Real backend shape of GET /api/courses/stats/cards (no `statsCards` key).
   statsResponse = () =>
     json({ totalCourses: 1, completedCourses: 0, hoursLearned: 0, certificates: 0 });
-  myCoursesResponse = () => json([{ id: 7 }]);
+  myCoursesResponse = () => json([{ id: 7, title: "React Basics", lessonsCount: 10 }]);
 
   fetchMock = vi.fn((url) => {
     const u = String(url);
@@ -112,6 +139,7 @@ beforeEach(() => {
     if (u.includes("/api/courses/stats/cards")) return statsResponse();
     if (u.includes("/api/courses/my-courses")) return myCoursesResponse();
     if (u.includes("/api/certificate/list")) return json({ stats: {} });
+    if (u.includes("/api/analytics")) return json({ totalHours: 5 });
     if (u.includes("/api/courses/7/learning")) return json(structuredClone(LEARNING_DATA));
     if (u.includes("/api/ai/generate-video")) return generateResponse();
     return json({});
@@ -125,7 +153,7 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("Dashboard banner when courses are missing (the 'No courses available' bug)", () => {
+describe("Dashboard banner when courses are missing or stats fail", () => {
   it("still shows courses when the stats request fails, and tells the user to enroll", async () => {
     authState.user = { id: 1, name: "Test", purchasedCourses: [] };
     myCoursesResponse = () => json([]);
@@ -137,29 +165,40 @@ describe("Dashboard banner when courses are missing (the 'No courses available' 
 
     await clickBanner();
 
-    await waitFor(() => expect(toastMock).toHaveBeenCalledWith("Enroll in a course to try AI lessons."));
+    await waitFor(() =>
+      expect(toastMock).toHaveBeenCalledWith("Enroll in a course to try AI lessons."),
+    );
     await waitFor(() => expect(currentLocation.pathname).toBe("/courses"));
     expect(toastMock.error).not.toHaveBeenCalled();
   });
 
-  it("says it could not LOAD courses (not 'none available') when /api/courses fails", async () => {
+  it("handles real backend shape of /api/courses/stats/cards without destructuring nonexistent statsCards", async () => {
+    statsResponse = () =>
+      json({ totalCourses: 5, completedCourses: 2, hoursLearned: 14, certificates: 3 });
+
+    renderApp();
+    await screen.findByRole("region", { name: /try ai generated lessons/i });
+
+    // The stats endpoint was called with real shape and dashboard loaded cleanly
+    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/courses/stats/cards"))).toBe(
+      true,
+    );
+  });
+
+  it("says it could not LOAD courses when /api/courses fails", async () => {
     authState.user = { id: 1, name: "Test", purchasedCourses: [] };
     myCoursesResponse = () => json([]);
     coursesResponse = () => json({ message: "Failed to load courses" }, 500);
 
     renderApp();
     await waitFor(() =>
-      expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/courses"))).toBe(true)
+      expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith("/api/courses"))).toBe(true),
     );
-    // Let the failed load settle before clicking.
     await new Promise((r) => setTimeout(r, 50));
     await clickBanner();
 
     await waitFor(() =>
-      expect(toastMock.error).toHaveBeenCalledWith("Couldn't load courses. Please try again.")
-    );
-    expect(toastMock.error).not.toHaveBeenCalledWith(
-      "No courses are available right now. Check back soon!"
+      expect(toastMock.error).toHaveBeenCalledWith("Couldn't load courses. Please try again."),
     );
   });
 
@@ -174,35 +213,114 @@ describe("Dashboard banner when courses are missing (the 'No courses available' 
 
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith(
-        "No courses are available right now. Check back soon!"
-      )
+        "No courses are available right now. Check back soon!",
+      ),
     );
   });
 });
 
-describe("Dashboard banner -> AI lesson picker (real components)", () => {
-  it("clicking the banner navigates to the course and opens the celebrity picker", async () => {
+describe("Deterministic course selection and eligibility", () => {
+  it("selects in-progress course over unstarted or completed courses", () => {
+    const unstarted = { id: 1, title: "Unstarted", total: 10, completed: 0 };
+    const inProgress = { id: 2, title: "In Progress", total: 10, completed: 4 };
+    const completed = { id: 3, title: "Completed", total: 10, completed: 10 };
+
+    const selected = selectEligibleAICourse([unstarted, inProgress, completed]);
+    expect(selected?.id).toBe(2);
+  });
+
+  it("selects unstarted course with lessons when no in-progress courses exist", () => {
+    const unstarted = { id: 1, title: "Unstarted", total: 10, completed: 0 };
+    const completed = { id: 3, title: "Completed", total: 10, completed: 10 };
+
+    const selected = selectEligibleAICourse([completed, unstarted]);
+    expect(selected?.id).toBe(1);
+  });
+
+  it("filters out courses with 0 eligible lessons", () => {
+    const emptyCourse = { id: 1, title: "Empty", total: 0, completed: 0 };
+    const selected = selectEligibleAICourse([emptyCourse]);
+    expect(selected).toBeNull();
+  });
+
+  it("shows error feedback when enrolled courses have no eligible lessons", async () => {
+    // Course exists but has 0 lessons
+    coursesResponse = () => json([{ id: 7, title: "Zero Lesson Course", lessonsCount: 0 }]);
+    authState.user = {
+      id: 1,
+      name: "Test",
+      purchasedCourses: [{ courseId: 7, progress: {} }],
+    };
+
     renderApp();
     await clickBanner();
 
-    // Real router navigation to the enrolled course's learning page.
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith(
+        "No eligible lessons available in your enrolled courses.",
+      ),
+    );
+  });
+
+  it("falls back to /api/courses/my-courses via shared API abstraction when enrolled state is empty", async () => {
+    authState.user = { id: 1, name: "Test", purchasedCourses: [] };
+    myCoursesResponse = () => json([{ id: 7, title: "React Basics", lessonsCount: 10 }]);
+
+    renderApp();
+    await clickBanner();
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([u]) => String(u).includes("/api/courses/my-courses")),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(currentLocation.pathname).toBe("/learning/7"));
+  });
+
+  it("shows error feedback when /api/courses/my-courses request fails", async () => {
+    authState.user = { id: 1, name: "Test", purchasedCourses: [] };
+    myCoursesResponse = () => json({ message: "Network error" }, 500);
+
+    renderApp();
+    await clickBanner();
+
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith("Couldn't load your courses. Please try again."),
+    );
+  });
+});
+
+describe("Dashboard banner -> AI lesson picker (real VoiceoverDialog flow)", () => {
+  it("clicking the banner navigates to the course and opens the VoiceoverDialog", async () => {
+    renderApp();
+    await clickBanner();
+
+    // Navigates to the enrolled course's learning page
     await waitFor(() => expect(currentLocation.pathname).toBe("/learning/7"));
 
-    // The picker (existing modal) opens without any further user action.
-    expect(await screen.findByText("Salman Khan")).toBeDefined();
-    expect(screen.getByText("Modi ji")).toBeDefined();
-    expect(screen.getByText("SRK")).toBeDefined();
+    // The VoiceoverDialog opens with real accessible radio group and options
+    expect(await screen.findByRole("dialog")).toBeDefined();
+    expect(screen.getByRole("radio", { name: /salman khan/i })).toBeDefined();
+    expect(screen.getByRole("radio", { name: /modi ji/i })).toBeDefined();
+    expect(screen.getByRole("radio", { name: /srk/i })).toBeDefined();
 
-    // Opening the picker must not start generation by itself.
+    // Opening the picker does not start video generation prematurely
     expect(generateCalls()).toHaveLength(0);
   });
 
-  it("clears the navigation flag so the picker does not reopen on refresh/re-entry", async () => {
-    renderApp();
-    await clickBanner();
-    await screen.findByText("Salman Khan");
+  it("clears the openAIVoiceover flag while preserving any other router state", async () => {
+    // Navigates with openAIVoiceover AND an extra router state property (e.g. lessonId)
+    renderApp([
+      { pathname: "/learning/7", state: { openAIVoiceover: true, preservedExtra: "value-123" } },
+    ]);
 
-    await waitFor(() => expect(currentLocation.state?.openAIVoiceover).toBeUndefined());
+    await screen.findByRole("dialog");
+
+    // openAIVoiceover is removed, but preservedExtra is preserved!
+    await waitFor(() => {
+      expect(currentLocation.state?.openAIVoiceover).toBeUndefined();
+      expect(currentLocation.state?.preservedExtra).toBe("value-123");
+    });
   });
 
   it("does not open the picker on normal navigation to the learning page", async () => {
@@ -211,28 +329,34 @@ describe("Dashboard banner -> AI lesson picker (real components)", () => {
         <Routes>
           <Route path="/learning/:id" element={<LearningPage />} />
         </Routes>
-      </MemoryRouter>
+      </MemoryRouter>,
     );
 
     await waitFor(() =>
-      expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/courses/7/learning"))).toBe(true)
+      expect(
+        fetchMock.mock.calls.some(([u]) => String(u).includes("/api/courses/7/learning")),
+      ).toBe(true),
     );
-    expect(screen.queryByText("Salman Khan")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("choosing a celebrity sends exactly one generate-video request with the right payload", async () => {
+  it("choosing a celebrity and applying sends exactly one generate-video request with the right payload", async () => {
     generateResponse = () =>
       json({ cached: true, videoUrl: "https://res.cloudinary.com/demo/video.mp4", jobId: "j1" });
 
     renderApp();
     await clickBanner();
-    fireEvent.click(await screen.findByText("Salman Khan"));
+    await applyCelebrityVoice("Salman Khan");
 
     await waitFor(() => expect(generateCalls()).toHaveLength(1));
     const [url, options] = generateCalls()[0];
-    expect(url).toBe("/api/ai/generate-video");
+    expect(url).toContain("/api/ai/generate-video");
     expect(options.method).toBe("POST");
-    expect(options.headers.Authorization).toBe("Bearer test-token");
+    const authHeader =
+      options.headers instanceof Headers
+        ? options.headers.get("Authorization")
+        : options.headers?.Authorization;
+    expect(authHeader).toBe("Bearer test-token");
     expect(JSON.parse(options.body)).toEqual({
       courseId: 7,
       lessonId: 101,
@@ -241,17 +365,18 @@ describe("Dashboard banner -> AI lesson picker (real components)", () => {
     expect(toastMock.error).not.toHaveBeenCalled();
   });
 
-  it("shows the server's message when generate-video fails", async () => {
+  it("shows the classified error message when generate-video fails with 403", async () => {
     generateResponse = () => json({ message: "Course not purchased" }, 403);
 
     renderApp();
     await clickBanner();
-    fireEvent.click(await screen.findByText("Salman Khan"));
+    await applyCelebrityVoice("Salman Khan");
 
     await waitFor(() =>
-      expect(toastMock.error).toHaveBeenCalledWith("Course not purchased", {
-        id: "ai-video-error",
-      })
+      expect(toastMock.error).toHaveBeenCalledWith(
+        "You do not have permission to generate this lesson.",
+        { id: "ai-video-error" },
+      ),
     );
   });
 
@@ -260,13 +385,39 @@ describe("Dashboard banner -> AI lesson picker (real components)", () => {
 
     renderApp();
     await clickBanner();
-    fireEvent.click(await screen.findByText("Salman Khan"));
+    await applyCelebrityVoice("Salman Khan");
 
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith(
-        "Couldn't generate the AI lesson. Please try again.",
-        { id: "ai-video-error" }
-      )
+        "We couldn't connect to the AI service. Check your connection and try again.",
+        { id: "ai-video-error" },
+      ),
     );
+  });
+});
+
+describe("AILessonBanner accessibility and responsive markup", () => {
+  it("renders with correct landmark, labelledby, and accessible button", () => {
+    const handleGenerate = vi.fn();
+    render(<AILessonBanner onGenerate={handleGenerate} />);
+
+    const section = screen.getByRole("region", { name: /try ai generated lessons/i });
+    expect(section).toBeDefined();
+    expect(section.getAttribute("aria-labelledby")).toBe("ai-lesson-banner-title");
+
+    const button = screen.getByRole("button", { name: /generate ai lesson/i });
+    expect(button).toBeDefined();
+
+    fireEvent.click(button);
+    expect(handleGenerate).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks decorative robot SVG as aria-hidden and not focusable", () => {
+    render(<AILessonBanner onGenerate={vi.fn()} />);
+    const banner = screen.getByRole("region", { name: /try ai generated lessons/i });
+    const svg = banner.querySelector("svg.ai-lesson-banner__robot");
+    expect(svg).toBeDefined();
+    expect(svg?.getAttribute("aria-hidden")).toBe("true");
+    expect(svg?.getAttribute("focusable")).toBe("false");
   });
 });

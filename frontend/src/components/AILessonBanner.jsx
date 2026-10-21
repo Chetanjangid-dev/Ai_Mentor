@@ -11,10 +11,7 @@ const AILessonBanner = ({ onGenerate }) => (
           <h2 id="ai-lesson-banner-title">Try AI Generated Lessons</h2>
           <span className="ai-lesson-banner__badge">New</span>
         </div>
-        <p>
-          Create personalized video lessons with your favorite celebrity and
-          learn faster!
-        </p>
+        <p>Create personalized video lessons with your favorite celebrity and learn faster!</p>
       </div>
     </div>
 
@@ -43,13 +40,38 @@ const AILessonBanner = ({ onGenerate }) => (
       <circle cx="48" cy="6" r="5" fill="#4aa3ff" />
       <rect x="4" y="38" width="9" height="20" rx="4.5" fill="#4a8cff" />
       <rect x="83" y="38" width="9" height="20" rx="4.5" fill="#4a8cff" />
-      <rect x="12" y="16" width="72" height="56" rx="22" fill="url(#ai-banner-body)" stroke="#a9c4f5" strokeWidth="2" />
+      <rect
+        x="12"
+        y="16"
+        width="72"
+        height="56"
+        rx="22"
+        fill="url(#ai-banner-body)"
+        stroke="#a9c4f5"
+        strokeWidth="2"
+      />
       <rect x="20" y="26" width="56" height="34" rx="15" fill="url(#ai-banner-visor)" />
       <circle cx="37" cy="41" r="5" fill="#5fe3ff" />
       <circle cx="59" cy="41" r="5" fill="#5fe3ff" />
-      <path d="M41 51 Q48 57 55 51" stroke="#5fe3ff" strokeWidth="2.5" fill="none" strokeLinecap="round" />
+      <path
+        d="M41 51 Q48 57 55 51"
+        stroke="#5fe3ff"
+        strokeWidth="2.5"
+        fill="none"
+        strokeLinecap="round"
+      />
       <rect x="26" y="74" width="44" height="34" rx="14" fill="#3b82f6" />
-      <text x="48" y="97" textAnchor="middle" fontSize="15" fontWeight="700" fill="#ffffff" fontFamily="Inter, system-ui, sans-serif">AI</text>
+      <text
+        x="48"
+        y="97"
+        textAnchor="middle"
+        fontSize="15"
+        fontWeight="700"
+        fill="#ffffff"
+        fontFamily="Inter, system-ui, sans-serif"
+      >
+        AI
+      </text>
     </svg>
   </section>
 );
