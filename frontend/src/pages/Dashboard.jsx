@@ -1,4 +1,4 @@
-import { apiFetch as fetch } from "../lib/api";
+import { apiFetch } from "../lib/api";
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -82,10 +82,10 @@ const Dashboard = () => {
         const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
         const [coursesResult, certificateResult, analyticsResult, statsResult] =
           await Promise.allSettled([
-            fetch("/api/courses", { headers }),
-            fetch("/api/certificate/list", { headers }),
-            fetch("/api/analytics", { headers }),
-            fetch("/api/courses/stats/cards", { headers }),
+            apiFetch("/api/courses", { headers }),
+            apiFetch("/api/certificate/list", { headers }),
+            apiFetch("/api/analytics", { headers }),
+            apiFetch("/api/courses/stats/cards", { headers }),
           ]);
 
         if (coursesResult.status === "fulfilled" && coursesResult.value.ok) {
@@ -250,7 +250,7 @@ const Dashboard = () => {
     // 2. If no enrolled courses found from user.purchasedCourses, query my-courses API
     if (!targetCourse && enrolledCourses.length === 0) {
       try {
-        const response = await fetch("/api/courses/my-courses");
+        const response = await apiFetch("/api/courses/my-courses");
         if (!response || !response.ok) {
           throw new Error(`My courses API failed: ${response?.status}`);
         }
@@ -301,7 +301,7 @@ const Dashboard = () => {
     if (!user) return navigate("/login");
     try {
       if (Number(course.priceValue || 0) === 0) {
-        await fetch("/api/users/purchase-course", {
+        await apiFetch("/api/users/purchase-course", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

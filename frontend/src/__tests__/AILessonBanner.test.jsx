@@ -262,18 +262,59 @@ describe("Deterministic course selection and eligibility", () => {
     );
   });
 
-  it("falls back to /api/courses/my-courses via shared API abstraction when enrolled state is empty", async () => {
+  it("applies progress tie-break rule: selects course with highest progress % among in-progress courses", () => {
+    const courseA = { id: 10, title: "Alpha", total: 10, completed: 3 }; // 30%
+    const courseB = { id: 20, title: "Beta", total: 10, completed: 7 }; // 70%
+    const courseC = { id: 30, title: "Gamma", total: 20, completed: 10 }; // 50%
+
+    const selected = selectEligibleAICourse([courseA, courseB, courseC]);
+    expect(selected?.id).toBe(20); // 70% progress wins
+  });
+
+  it("applies alphabetical tie-break rule: selects alphabetical title when progress % ties", () => {
+    const courseZ = { id: 1, title: "Zeta Course", total: 10, completed: 5 }; // 50%
+    const courseA = { id: 2, title: "Alpha Course", total: 10, completed: 5 }; // 50%
+    const courseM = { id: 3, title: "Middle Course", total: 10, completed: 5 }; // 50%
+
+    const selected = selectEligibleAICourse([courseZ, courseA, courseM]);
+    expect(selected?.id).toBe(2); // "Alpha Course" wins alphabetical tie-break
+  });
+
+  it("applies alphabetical tie-break rule among unstarted courses", () => {
+    const unstartedZ = { id: 10, title: "Python Advanced", total: 10, completed: 0 };
+    const unstartedA = { id: 20, title: "Data Science 101", total: 10, completed: 0 };
+
+    const selected = selectEligibleAICourse([unstartedZ, unstartedA]);
+    expect(selected?.id).toBe(20); // "Data Science 101" wins alphabetical tie-break
+  });
+
+  it("breaks identical progress and title ties deterministically by course ID", () => {
+    const course1 = { id: 5, title: "Duplicate Title", total: 10, completed: 2 };
+    const course2 = { id: 2, title: "Duplicate Title", total: 10, completed: 2 };
+
+    const selected = selectEligibleAICourse([course1, course2]);
+    expect(selected?.id).toBe(2); // ID 2 comes before ID 5
+  });
+
+  it("falls back to /api/courses/my-courses via authenticated shared API abstraction when enrolled state is empty", async () => {
+    localStorage.setItem("token", "auth-token-banner-fallback");
     authState.user = { id: 1, name: "Test", purchasedCourses: [] };
     myCoursesResponse = () => json([{ id: 7, title: "React Basics", lessonsCount: 10 }]);
 
     renderApp();
     await clickBanner();
 
-    await waitFor(() =>
-      expect(
-        fetchMock.mock.calls.some(([u]) => String(u).includes("/api/courses/my-courses")),
-      ).toBe(true),
-    );
+    // Proves the fallback request uses the authenticated shared API path (API_BASE_URL prefix + Authorization header)
+    await waitFor(() => {
+      const fallbackCall = fetchMock.mock.calls.find(([u]) =>
+        String(u).includes("/api/courses/my-courses"),
+      );
+      expect(fallbackCall).toBeDefined();
+      const [url, options] = fallbackCall;
+      expect(String(url)).toBe("http://localhost:5000/api/courses/my-courses");
+      const headers = new Headers(options?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer auth-token-banner-fallback");
+    });
     await waitFor(() => expect(currentLocation.pathname).toBe("/learning/7"));
   });
 
