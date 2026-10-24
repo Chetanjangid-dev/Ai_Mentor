@@ -745,7 +745,112 @@ test("Stripe checkout rejects when course does not exist in database", async () 
   assert.deepEqual(await res.json(), { error: "Course not found" });
 });
 
-test("Stripe checkout ignores client price tampering and uses authoritative DB price", async () => {
+test("Stripe checkout rejects when course is deleted in database", async () => {
+  Course.findByPk = async () => ({
+    id: 7,
+    title: "Deleted Course",
+    priceValue: 100,
+    status: "deleted",
+  });
+  const res = await request("/api/payment/create-checkout-session", {
+    method: "POST",
+    body: { course: { id: 7 }, idempotencyKey: "deleted-course" },
+  });
+  assert.equal(res.status, 404);
+  assert.deepEqual(await res.json(), { error: "Course not found" });
+});
+
+test("Stripe checkout rejects when course status is not published", async () => {
+  for (const status of ["draft", "archived", "pending", "review"]) {
+    Course.findByPk = async () => ({ id: 7, title: "Unpublished Course", priceValue: 100, status });
+    const res = await request("/api/payment/create-checkout-session", {
+      method: "POST",
+      body: { course: { id: 7 }, idempotencyKey: `unpub-${status}` },
+    });
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "This course is not currently available." });
+  }
+});
+
+test("Stripe checkout rejects when course status is missing, empty, or undefined", async () => {
+  for (const status of [null, undefined, "", "   "]) {
+    Course.findByPk = async () => ({ id: 7, title: "No Status Course", priceValue: 100, status });
+    const res = await request("/api/payment/create-checkout-session", {
+      method: "POST",
+      body: { course: { id: 7 }, idempotencyKey: `missing-status-${String(status)}` },
+    });
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "This course is not currently available." });
+  }
+});
+
+test("Stripe checkout returns 500 when database lookup fails", async () => {
+  Course.findByPk = async () => {
+    throw new Error("DB connection failure");
+  };
+  const res = await request("/api/payment/create-checkout-session", {
+    method: "POST",
+    body: { course: { id: 7 }, idempotencyKey: "db-fail-stripe" },
+  });
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), { error: "Stripe session failed" });
+});
+
+test("Stripe checkout validates DB price and rejects zero, negative, malformed, or non-finite values", async () => {
+  for (const invalidPrice of [
+    0,
+    -50,
+    "abc",
+    "",
+    null,
+    undefined,
+    Infinity,
+    -Infinity,
+    NaN,
+    true,
+    false,
+  ]) {
+    Course.findByPk = async () => ({
+      id: 7,
+      title: "Bad Price",
+      priceValue: invalidPrice,
+      status: "published",
+    });
+    const res = await request("/api/payment/create-checkout-session", {
+      method: "POST",
+      body: { course: { id: 7 }, idempotencyKey: `invalid-price-${String(invalidPrice)}` },
+    });
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid course data" });
+  }
+});
+
+test("Stripe checkout ignores client title when DB title is missing and uses server fallback", async () => {
+  let createdData;
+  let stripeOptions;
+  Payment.create = async (data) => {
+    createdData = data;
+    return { id: "payment-fallback-title", async update() {} };
+  };
+  paymentGatewayServices.createStripeCheckoutSession = async (options) => {
+    stripeOptions = options;
+    return { id: "session-fallback", url: "https://checkout.test/session-fallback" };
+  };
+  Course.findByPk = async () => ({ id: 7, title: null, priceValue: 200, status: "published" });
+  const res = await request("/api/payment/create-checkout-session", {
+    method: "POST",
+    body: {
+      course: { id: 7, title: "Client Malicious Title" },
+      idempotencyKey: "stripe-title-fallback",
+    },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(createdData.courseTitle, "Course");
+  assert.equal(stripeOptions.line_items[0].price_data.product_data.name, "Course");
+  assert.equal(stripeOptions.metadata.courseTitle, "Course");
+});
+
+test("Stripe checkout ignores client price tampering and verifies all metadata, line items, and records", async () => {
   let createdData;
   let stripeOptions;
   Payment.create = async (data) => {
@@ -771,7 +876,11 @@ test("Stripe checkout ignores client price tampering and uses authoritative DB p
   assert.equal(res.status, 200);
   assert.equal(createdData.amount, 49900); // Charged ₹499, NOT ₹1
   assert.equal(createdData.courseTitle, "Secure Course"); // Uses DB course title
+  assert.equal(createdData.courseId, 7);
   assert.equal(stripeOptions.line_items[0].price_data.unit_amount, 49900);
+  assert.equal(stripeOptions.line_items[0].price_data.product_data.name, "Secure Course");
+  assert.equal(stripeOptions.metadata.courseId, "7");
+  assert.equal(stripeOptions.metadata.courseTitle, "Secure Course");
 });
 
 test("Razorpay order rejects when course does not exist in database", async () => {
@@ -784,7 +893,111 @@ test("Razorpay order rejects when course does not exist in database", async () =
   assert.deepEqual(await res.json(), { error: "Course not found" });
 });
 
-test("Razorpay order ignores client price tampering and uses authoritative DB price", async () => {
+test("Razorpay order rejects when course is deleted in database", async () => {
+  Course.findByPk = async () => ({
+    id: 9,
+    title: "Deleted Course",
+    priceValue: 250,
+    status: "deleted",
+  });
+  const res = await request("/api/razorpay/create-order", {
+    method: "POST",
+    body: { course: { id: 9 }, idempotencyKey: "deleted-rzp-course" },
+  });
+  assert.equal(res.status, 404);
+  assert.deepEqual(await res.json(), { error: "Course not found" });
+});
+
+test("Razorpay order rejects when course status is not published", async () => {
+  for (const status of ["draft", "archived", "pending", "review"]) {
+    Course.findByPk = async () => ({ id: 9, title: "Unpublished Course", priceValue: 250, status });
+    const res = await request("/api/razorpay/create-order", {
+      method: "POST",
+      body: { course: { id: 9 }, idempotencyKey: `unpub-rzp-${status}` },
+    });
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "This course is not currently available." });
+  }
+});
+
+test("Razorpay order rejects when course status is missing, empty, or undefined", async () => {
+  for (const status of [null, undefined, "", "   "]) {
+    Course.findByPk = async () => ({ id: 9, title: "No Status Course", priceValue: 250, status });
+    const res = await request("/api/razorpay/create-order", {
+      method: "POST",
+      body: { course: { id: 9 }, idempotencyKey: `missing-status-rzp-${String(status)}` },
+    });
+    assert.equal(res.status, 403);
+    assert.deepEqual(await res.json(), { error: "This course is not currently available." });
+  }
+});
+
+test("Razorpay order returns 500 when database lookup fails", async () => {
+  Course.findByPk = async () => {
+    throw new Error("DB connection failure");
+  };
+  const res = await request("/api/razorpay/create-order", {
+    method: "POST",
+    body: { course: { id: 9 }, idempotencyKey: "db-fail-rzp" },
+  });
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), { error: "Razorpay order creation failed" });
+});
+
+test("Razorpay order validates DB price and rejects zero, negative, malformed, or non-finite values", async () => {
+  for (const invalidPrice of [
+    0,
+    -50,
+    "abc",
+    "",
+    null,
+    undefined,
+    Infinity,
+    -Infinity,
+    NaN,
+    true,
+    false,
+  ]) {
+    Course.findByPk = async () => ({
+      id: 9,
+      title: "Bad Price",
+      priceValue: invalidPrice,
+      status: "published",
+    });
+    const res = await request("/api/razorpay/create-order", {
+      method: "POST",
+      body: { course: { id: 9 }, idempotencyKey: `invalid-price-rzp-${String(invalidPrice)}` },
+    });
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid course data" });
+  }
+});
+
+test("Razorpay order ignores client title when DB title is missing and uses server fallback", async () => {
+  let createdData;
+  let gatewayOptions;
+  Payment.create = async (data) => {
+    createdData = data;
+    return { id: "payment-fallback-rzp", async update() {} };
+  };
+  paymentGatewayServices.createRazorpayOrder = async (options) => {
+    gatewayOptions = options;
+    return { id: "order-fallback-rzp", amount: options.amount, currency: options.currency };
+  };
+  Course.findByPk = async () => ({ id: 9, title: null, priceValue: 250, status: "published" });
+  const res = await request("/api/razorpay/create-order", {
+    method: "POST",
+    body: {
+      course: { id: 9, title: "Client Malicious Title" },
+      idempotencyKey: "rzp-title-fallback",
+    },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(createdData.courseTitle, "Course");
+  assert.equal(gatewayOptions.notes.courseTitle, "Course");
+});
+
+test("Razorpay order ignores client price tampering and verifies notes, receipt, and payment record", async () => {
   let createdData;
   let gatewayOptions;
   Payment.create = async (data) => {
@@ -809,6 +1022,32 @@ test("Razorpay order ignores client price tampering and uses authoritative DB pr
   });
   assert.equal(res.status, 200);
   assert.equal(createdData.amount, 25000); // Charged ₹250, NOT ₹1
-  assert.equal(gatewayOptions.amount, 25000);
   assert.equal(createdData.courseTitle, "Razorpay Course");
+  assert.equal(createdData.courseId, 9);
+  assert.equal(gatewayOptions.amount, 25000);
+  assert.equal(gatewayOptions.notes.courseId, "9");
+  assert.equal(gatewayOptions.notes.courseTitle, "Razorpay Course");
+  assert.match(gatewayOptions.receipt, /^receipt_order_9_\d+$/);
+});
+
+test("Razorpay verify-payment uses stored payment courseTitle or server fallback and never client title", async () => {
+  const paymentWithTitle = makeStoredPayment({
+    courseTitle: "Authoritative Stored Course",
+  });
+  const state1 = setupVerify(paymentWithTitle);
+  const res1 = await verifyRequest({
+    courseTitle: "Malicious Tampered Title 1",
+  });
+  assert.equal(res1.status, 200);
+  assert.equal(state1.user.purchasedCourses[0].courseTitle, "Authoritative Stored Course");
+
+  const paymentWithoutTitle = makeStoredPayment({
+    courseTitle: null,
+  });
+  const state2 = setupVerify(paymentWithoutTitle);
+  const res2 = await verifyRequest({
+    courseTitle: "Malicious Tampered Title 2",
+  });
+  assert.equal(res2.status, 200);
+  assert.equal(state2.user.purchasedCourses[0].courseTitle, "Course");
 });

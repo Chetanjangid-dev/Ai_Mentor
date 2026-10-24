@@ -43,11 +43,16 @@ router.post("/create-checkout-session", protect, paymentLimiter, async (req, res
       return res.status(404).json({ error: "Course not found" });
     }
 
-    if (dbCourse.status && dbCourse.status !== "published") {
+    if (dbCourse.status !== "published") {
       return res.status(403).json({ error: "This course is not currently available." });
     }
 
-    const priceValue = Number(dbCourse.priceValue);
+    const rawPrice = dbCourse.priceValue;
+    const priceValue =
+      typeof rawPrice === "number" || (typeof rawPrice === "string" && rawPrice.trim() !== "")
+        ? Number(rawPrice)
+        : NaN;
+
     if (!Number.isFinite(priceValue) || priceValue <= 0) {
       return res.status(400).json({ error: "Invalid course data" });
     }
@@ -67,7 +72,7 @@ router.post("/create-checkout-session", protect, paymentLimiter, async (req, res
     // STEP 2: SAVE payment record FIRST (status: initiated)
     // ─────────────────────────────────────────────────
     const amount = Math.round(priceValue * 100); // ₹ → paise
-    const courseTitle = dbCourse.title || course.title || "Course";
+    const courseTitle = dbCourse.title?.trim() || "Course";
 
     const payment = await Payment.create({
       userId,
