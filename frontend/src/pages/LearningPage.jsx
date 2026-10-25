@@ -467,7 +467,9 @@ export default function Learning() {
         const fallbackMessage = "Couldn't generate the AI lesson. Please try again.";
         toast.error(
           error instanceof TypeError ? fallbackMessage : generationError.message || fallbackMessage,
-          { id: "ai-video-error" },
+          {
+            id: "ai-video-error",
+          },
         );
         console.error("AI video generation failed:", {
           type: generationError.type,
